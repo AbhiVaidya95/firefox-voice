@@ -1,4 +1,4 @@
-/* globals buildSettings */
+/* globals buildSettings,Fuse, log */
 import * as intentRunner from "../../background/intentRunner.js";
 import English from "../../language/langs/english.js";
 import * as browserUtil from "../../browserUtil.js";
@@ -47,7 +47,7 @@ function previousLevel(levels, current) {
   return levels[0];
 }
 
-async function updateZoom(context, operation) {
+async function updateZoom(operation) {
   // 0 -> Reset
   // 1 -> zoom in
   // -1 -> zoom out
@@ -81,21 +81,21 @@ async function updateZoom(context, operation) {
 intentRunner.registerIntent({
   name: "tabs.zoomIn",
   async run(context) {
-    await updateZoom(context, 1);
+    await updateZoom(1);
   },
 });
 
 intentRunner.registerIntent({
   name: "tabs.zoomOut",
   async run(context) {
-    await updateZoom(context, -1);
+    await updateZoom(-1);
   },
 });
 
 intentRunner.registerIntent({
   name: "tabs.zoomReset",
   async run(context) {
-    await updateZoom(context, 0);
+    await updateZoom(0);
   },
 });
 
@@ -123,21 +123,21 @@ intentRunner.registerIntent({
 
 intentRunner.registerIntent({
   name: "tabs.undoCloseTab",
-  async run(context) {
+  async run() {
     await browser.experiments.voice.undoCloseTab();
   },
 });
 
 intentRunner.registerIntent({
   name: "tabs.undoCloseWindow",
-  async run(context) {
+  async run() {
     await browser.experiments.voice.undoCloseWindow();
   },
 });
 
 intentRunner.registerIntent({
   name: "tabs.open",
-  async run(context) {
+  async run() {
     // browserUtil.createTab is the normal way to do this, but it sometimes doesn't open a new tab
     // Since the user asked, we definitely want to open a new tab
     await browser.tabs.create({ active: true });
@@ -146,7 +146,7 @@ intentRunner.registerIntent({
 
 intentRunner.registerIntent({
   name: "tabs.pin",
-  async run(context) {
+  async run() {
     const activeTab = await browserUtil.activeTab();
     await browser.tabs.update(activeTab.id, { pinned: true });
   },
@@ -154,7 +154,7 @@ intentRunner.registerIntent({
 
 intentRunner.registerIntent({
   name: "tabs.unpin",
-  async run(context) {
+  async run() {
     const activeTab = await browserUtil.activeTab();
     await browser.tabs.update(activeTab.id, { pinned: false });
   },
@@ -162,7 +162,7 @@ intentRunner.registerIntent({
 
 intentRunner.registerIntent({
   name: "tabs.saveAsPdf",
-  async run(context) {
+  async run() {
     // This could return:
     // "saved"
     // "replaced"
@@ -182,14 +182,14 @@ intentRunner.registerIntent({
 
 intentRunner.registerIntent({
   name: "tabs.reload",
-  async run(context) {
+  async run() {
     await browser.tabs.reload();
   },
 });
 
 intentRunner.registerIntent({
   name: "tabs.duplicate",
-  async run(context) {
+  async run() {
     const activeTab = await browserUtil.activeTab();
     await browser.tabs.duplicate(activeTab.id);
   },
@@ -198,7 +198,7 @@ intentRunner.registerIntent({
 if (!buildSettings.android) {
   intentRunner.registerIntent({
     name: "tabs.openWindow",
-    async run(context) {
+    async run() {
       await browser.windows.create({});
     },
   });
@@ -207,7 +207,7 @@ if (!buildSettings.android) {
 if (!buildSettings.android) {
   intentRunner.registerIntent({
     name: "tabs.moveToWindow",
-    async run(context) {
+    async run() {
       const activeTab = await browserUtil.activeTab();
       await browser.windows.create({ tabId: activeTab.id });
     },
@@ -218,7 +218,7 @@ if (!buildSettings.android) {
   // See open bug https://bugzilla.mozilla.org/show_bug.cgi?id=1372178 for Android support
   intentRunner.registerIntent({
     name: "tabs.openPrivateWindow",
-    async run(context) {
+    async run() {
       const isAllowed = browser.extension.isAllowedIncognitoAccess();
       if (isAllowed === true) {
         await browser.windows.create({ incognito: true });
@@ -234,7 +234,7 @@ if (!buildSettings.android) {
 
 intentRunner.registerIntent({
   name: "tabs.openHomePage",
-  async run(context) {
+  async run() {
     const result = await browser.browserSettings.homepageOverride.get({});
     const homePageUrls = result.value.split("|");
     for (const homePageUrl of homePageUrls) {
@@ -245,7 +245,7 @@ intentRunner.registerIntent({
 
 intentRunner.registerIntent({
   name: "tabs.fullScreen",
-  async run(context) {
+  async run() {
     if (buildSettings.android) {
       const exc = new Error("Full screen not supported on Android");
       exc.displayMessage = exc.message;
@@ -395,7 +395,7 @@ intentRunner.registerIntent({
 
 intentRunner.registerIntent({
   name: "tabs.moveSelectedToNewWindow",
-  async run(context) {
+  async run() {
     const tabs = await browser.tabs.query({ highlighted: true });
     const tabsIds = tabs.map(tabInfo => tabInfo.id);
     const newWindow = await browser.windows.create({});
@@ -460,6 +460,7 @@ async function getMatchingTabs(options) {
     tabQuery.currentWindow = true;
   }
 
+  log.info("the most likely query text is:", options.query);
   if (options.query === undefined && options.activeTab !== undefined) {
     const activeTab = options.activeTab;
     const activeHostname = new URL(activeTab.url).hostname;
@@ -467,17 +468,60 @@ async function getMatchingTabs(options) {
   }
 
   let matchingTabs = await browser.tabs.query(tabQuery);
-
   if (options.query !== undefined) {
-    matchingTabs = matchingTabs.filter(tab => {
-      const query = options.query.toLowerCase();
-      return (
-        new URL(tab.url).origin.includes(query) ||
-        tab.title.toLowerCase().includes(query)
-      );
-    });
-  }
+    const fuseOptions = {
+      id: "tabId",
+      shouldSort: true,
+      tokenize: true,
+      findAllMatches: true,
+      includeScore: true,
+      threshold: 0.3,
+      location: 0,
+      distance: 100,
+      maxPatternLength: 32,
+      minMatchCharLength: 3,
+      keys: [
+        {
+          name: "title",
+          weight: 0.8,
+        },
+        {
+          name: "url",
+          weight: 0.2,
+        },
+      ],
+    };
 
+    let combinedTabContent = [];
+
+    for (const tab of matchingTabs) {
+      const result = {
+        tabId: tab.id,
+        title: tab.title,
+        url: tab.url,
+      };
+
+      combinedTabContent.push(result);
+    }
+
+    combinedTabContent = combinedTabContent.flat();
+
+    // use Fuse.js to parse the most probable response?
+    const fuse = new Fuse(combinedTabContent, fuseOptions);
+    const matches = fuse.search(options.query);
+    log.debug("find matches:", matches);
+    // TODO account for multiple matches
+    if (!matches.length) {
+      const e = new Error("No matching tab found");
+      e.displayMessage = "No matching tab found";
+      throw e;
+    }
+
+    matchingTabs = [];
+    for (const match of matches) {
+      matchingTabs.push(await browser.tabs.get(parseInt(match.item)));
+    }
+  }
   if (options.sort_by_index === true) {
     matchingTabs.sort((a, b) => {
       return a.index > b.index;
@@ -579,7 +623,7 @@ intentRunner.registerIntent({
 if (!buildSettings.android) {
   intentRunner.registerIntent({
     name: "tabs.closeSelectedTabs",
-    async run(context) {
+    async run() {
       const tabs = await browser.tabs.query({ highlighted: true });
       const tabIds = tabs.map(tab => tab.id);
 
@@ -590,7 +634,7 @@ if (!buildSettings.android) {
 
 intentRunner.registerIntent({
   name: "tabs.refreshSelectedTabs",
-  async run(context) {
+  async run() {
     const tabs = await browser.tabs.query({ highlighted: true });
     for (const tab of tabs) {
       await browser.tabs.reload(tab.id);
@@ -763,7 +807,7 @@ async function callResult(cardAnswer) {
 
 intentRunner.registerIntent({
   name: "tabs.selectAllTabs",
-  async run(context) {
+  async run() {
     const tabs = await browser.tabs.query({
       currentWindow: true,
       pinned: false,
