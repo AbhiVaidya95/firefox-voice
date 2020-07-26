@@ -24,7 +24,9 @@ phrase = "Stop reading"
 [read.forwardRead]
 description = "Forward reading/narrating"
 match = """
-  forward (this |) (tab | page | paragraph) (to me | for me |)
+  forward (this |) paragraph (to me | for me |)
+  forward (this |) page (to me | for me |)
+  forward (this |) tab (to me | for me |)
 """
 
 [[read.forwardRead.example]]
